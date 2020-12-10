@@ -13,9 +13,7 @@ THIRD_PARTY_INCLUDES_END
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable:4611)
-#pragma warning(disable:4996)
 #endif
-#pragma optimize("", off)
 
 #define PNG_SIG_LENGTH 8 //The signature length for PNG
 #define BYTE_SIZE 8 //Size of a byte
@@ -27,12 +25,12 @@ public:
 	//Constructor
 	PNG_file(const char *inputFileName)
 	{
-		FILE* inputFile = fopen(inputFileName, "rb");
+		FILE* inputFile;
 
 		unsigned char header[BYTE_SIZE];
 
 		//Check if the file opened
-		check(inputFile);
+		check(fopen_s(&inputFile, inputFileName, "rb") == 0);
 			
 
 		// START READING HERE
@@ -134,7 +132,6 @@ private:
 	png_structp write_ptr;
 };
 
-#pragma optimize("", on)
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
