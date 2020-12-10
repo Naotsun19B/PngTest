@@ -10,35 +10,32 @@ THIRD_PARTY_INCLUDES_START
 #include <setjmp.h>
 THIRD_PARTY_INCLUDES_END
 
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable:4611)
-#endif
-
-#define PNG_SIG_LENGTH 8 //The signature length for PNG
-#define BYTE_SIZE 8 //Size of a byte
-#define SIZE_WIDTH 32 //The number of bits used for storing the length of a file
-
-class PNG_file 
+class FPngTextChunkHelpers
 {
 public:
-	//Constructor
-	PNG_file(const char *inputFileName)
+	// The signature length for PNG.
+	static const int32 SignatureLength = 8;
+	// Size of a byte.
+	static const int32 ByteSize = 8;
+	// The number of bits used for storing the length of a file.
+	static const int32 SizeWidth = 32;
+
+public:
+	FPngTextChunkHelpers(const FString& InFilename)
 	{
 		FILE* inputFile;
 
-		unsigned char header[BYTE_SIZE];
+		unsigned char header[ByteSize];
 
 		//Check if the file opened
-		check(fopen_s(&inputFile, inputFileName, "rb") == 0);
-			
+		check(fopen_s(&inputFile, TCHAR_TO_ANSI(*InFilename), "rb") == 0);
 
 		// START READING HERE
 
-		fread(header, 1, PNG_SIG_LENGTH, inputFile);
+		fread(header, 1, SignatureLength, inputFile);
 
 		//Check if it is a PNG
-		check(!png_sig_cmp(header, 0, PNG_SIG_LENGTH));
+		check(!png_sig_cmp(header, 0, SignatureLength));
 
 
 		//Set up libPNG data structures and error handling
@@ -48,7 +45,7 @@ public:
 
 		info_ptr = png_create_info_struct(read_ptr);
 
-		if (!info_ptr) 
+		if (!info_ptr)
 		{
 			png_destroy_read_struct(&read_ptr, (png_infopp)NULL, (png_infopp)NULL);
 			checkNoEntry();
@@ -56,7 +53,7 @@ public:
 
 		png_infop end_info = png_create_info_struct(read_ptr);
 
-		if (!end_info) 
+		if (!end_info)
 		{
 			png_destroy_read_struct(&read_ptr, &info_ptr, (png_infopp)NULL);
 			checkNoEntry();
@@ -67,7 +64,7 @@ public:
 		png_init_io(read_ptr, inputFile);
 
 		//Alert libPNG that we read PNG_SIG_LENGTH bytes at the beginning
-		png_set_sig_bytes(read_ptr, PNG_SIG_LENGTH);
+		png_set_sig_bytes(read_ptr, SignatureLength);
 
 		//Read the entire PNG image into memory
 		png_read_png(read_ptr, info_ptr, PNG_TRANSFORM_IDENTITY, NULL);
@@ -75,20 +72,57 @@ public:
 		row_pointers = png_get_rows(read_ptr, info_ptr);
 
 		//Make sure the bit depth is correct
-		check(read_ptr->bit_depth == BYTE_SIZE);
+		check(read_ptr->bit_depth == ByteSize);
 
 		fclose(inputFile);
 	}
 
-	~PNG_file()
+	virtual ~FPngTextChunkHelpers()
 	{
-		png_destroy_read_struct(&read_ptr, &info_ptr, (png_infopp)NULL);
+		png_destroy_read_struct(&read_ptr, &info_ptr, NULL);
 	}
 
-	void writeTextChunk(const char *outputFileName, png_charp text)
+protected:
+	png_bytep* row_pointers;
+	png_infop info_ptr;
+	png_structp read_ptr;
+};
+
+class FPngTextChunkReader : public FPngTextChunkHelpers
+{
+public:
+	FPngTextChunkReader(const FString& InFilename) : FPngTextChunkHelpers(InFilename) {}
+
+	void readTextChunk(TArray<FString>& TextChunk)
+	{
+		check(info_ptr);
+
+		png_textp text_ptr;
+		int32 num_text;
+		if (png_get_text(read_ptr, info_ptr, &text_ptr, &num_text))
+		{
+			for (int32 index = 0; index < num_text; index++)
+			{
+				TextChunk.Add(ANSI_TO_TCHAR(text_ptr[index].key));
+			}
+		}
+	}
+};
+
+class FPngTextChunkWriter : public FPngTextChunkHelpers
+{
+public:
+	FPngTextChunkWriter(const FString& InFilename) : FPngTextChunkHelpers(InFilename), filename(InFilename) {}
+
+	~FPngTextChunkWriter()
+	{
+		png_destroy_write_struct(&write_ptr, &info_ptr);
+	}
+
+	void writeTextChunk(const FString& text)
 	{
 		FILE* outputFile;
-		check(fopen_s(&outputFile, outputFileName, "wb") == 0);
+		check(fopen_s(&outputFile, TCHAR_TO_ANSI(*filename), "wb") == 0);
 
 		write_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
 		check(write_ptr);
@@ -97,7 +131,7 @@ public:
 
 		png_text text_ptr[1];
 
-		text_ptr[0].key = text;
+		text_ptr[0].key = TCHAR_TO_ANSI(*text);
 		text_ptr[0].compression = PNG_TEXT_COMPRESSION_NONE;
 
 		png_set_text(write_ptr, info_ptr, text_ptr, 1);
@@ -110,46 +144,29 @@ public:
 		fclose(outputFile);
 	}
 
-	void readTextChunk(TArray<FString>& TextChunk)
-	{
-		check(info_ptr);
-		
-		png_textp       text_ptr;
-		int             num_text;
-		if (png_get_text(read_ptr, info_ptr, &text_ptr, &num_text))
-		{
-			for (int index = 0; index < num_text; index++)
-			{
-				TextChunk.Add(ANSI_TO_TCHAR(text_ptr[index].key));
-			}
-		}
-	}
-
 private:
-	png_bytep* row_pointers;
-	png_infop info_ptr;
-	png_structp read_ptr;
 	png_structp write_ptr;
+	FString filename;
 };
-
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
 
 static const FString& Filename = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("Test.png")));
 
 bool UMyBlueprintFunctionLibrary::Write(const FString& InText)
 {
-	PNG_file link = PNG_file(TCHAR_TO_ANSI(*Filename));
-	link.writeTextChunk(TCHAR_TO_ANSI(*Filename), TCHAR_TO_ANSI(*InText));
+	//PNG_file link = PNG_file(TCHAR_TO_ANSI(*Filename));
+	//link.writeTextChunk(TCHAR_TO_ANSI(*Filename), TCHAR_TO_ANSI(*InText));
 
+	FPngTextChunkWriter Writer(Filename);
+	Writer.writeTextChunk(InText);
 	return true;
 }
 
 bool UMyBlueprintFunctionLibrary::Read(TArray<FString>& TextChunk)
 {
-	PNG_file link = PNG_file(TCHAR_TO_ANSI(*Filename));
-	link.readTextChunk(TextChunk);
+	//PNG_file link = PNG_file(TCHAR_TO_ANSI(*Filename));
+	//link.readTextChunk(TextChunk);
 
+	FPngTextChunkReader Reader(Filename);
+	Reader.readTextChunk(TextChunk);
 	return true;
 }
