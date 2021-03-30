@@ -4,20 +4,20 @@
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "MyBlueprintFunctionLibrary.generated.h"
+#include "PngTestFunctionLibrary.generated.h"
 
 /**
  * 
  */
 UCLASS()
-class PNGTEST_API UMyBlueprintFunctionLibrary : public UBlueprintFunctionLibrary
+class PNGTEST_API UPngTestFunctionLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 	
 public:
 	UFUNCTION(BlueprintCallable)
-	static bool Write(const FString& InText);
+	static bool Write(const TMap<FString, FString>& MapToWrite);
 
 	UFUNCTION(BlueprintCallable)
-	static bool Read(TArray<FString>& TextChunk);
+	static bool Read(TMap<FString, FString>& MapToRead);
 };
