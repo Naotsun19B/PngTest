@@ -7,12 +7,22 @@ static const FString& Filename = FPaths::ConvertRelativePathToFull(FPaths::Combi
 
 bool UPngTestFunctionLibrary::Write(const TMap<FString, FString>& MapToWrite)
 {
-	TSharedPtr<FPngTextChunkHelper> Helper = MakeShareable(new FPngTextChunkHelper(Filename));
-	return Helper->Write(MapToWrite);
+	TSharedPtr<FPngTextChunkHelper> Helper = FPngTextChunkHelper::CreatePngTextChunkHelper(Filename);
+	if (Helper.IsValid())
+	{
+		Helper->Compress(0);
+	}
+	
+	return true;
 }
 
 bool UPngTestFunctionLibrary::Read(TMap<FString, FString>& MapToRead)
 {
-	TSharedPtr<FPngTextChunkHelper> Helper = MakeShareable(new FPngTextChunkHelper(Filename));
-	return Helper->Read(MapToRead);
+	TSharedPtr<FPngTextChunkHelper> Helper = FPngTextChunkHelper::CreatePngTextChunkHelper(Filename);
+	if (Helper.IsValid())
+	{
+		Helper->Uncompress(ERGBFormat::RGBA, 8);
+	}
+
+	return true;
 }
