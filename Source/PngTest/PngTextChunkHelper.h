@@ -31,7 +31,7 @@ public:
 	FPngTextChunkHelper();
 
 	// IImageWrapper interface.
-	virtual bool GetRaw(const ERGBFormat InFormat, int32 InBitDepth, TArray64<uint8>& OutRawData) override;
+	virtual bool GetRaw(const ERGBFormat InFormat, int32 InBitDepth, TArray64<uint8>& OutRawData) override { return false; }
 	virtual bool SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth) override;
 	virtual const TArray64<uint8>& GetCompressed(int32 Quality = 0) override;
 	virtual bool SetCompressed(const void* InCompressedData, int64 InCompressedSize) override;
@@ -45,10 +45,9 @@ public:
 	// End of IImageWrapper interface.
 
 	virtual bool IsPNG() const;
-	virtual bool LoadPNGHeader();
+	virtual bool Read(TMap<FString, FString>& MapToRead);
 	virtual void Reset();
 	virtual void Compress(int32 Quality);
-	virtual void Uncompress(const ERGBFormat InFormat, int32 InBitDepth);
 
 	virtual void SetError(const TCHAR* ErrorMessage)
 	{

@@ -113,19 +113,6 @@ TSharedPtr<FPngTextChunkHelper> FPngTextChunkHelper::CreatePngTextChunkHelper(co
 	return PngTextChunkHelper;
 }
 
-bool FPngTextChunkHelper::GetRaw(const ERGBFormat InFormat, int32 InBitDepth, TArray64<uint8>& OutRawData)
-{
-	LastError.Empty();
-	Uncompress(InFormat, InBitDepth);
-
-	if (LastError.IsEmpty())
-	{
-		OutRawData = MoveTemp(RawData);
-	}
-
-	return LastError.IsEmpty();
-}
-
 bool FPngTextChunkHelper::SetRaw(const void * InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth)
 {
 	check(InRawData != NULL);
@@ -168,7 +155,7 @@ bool FPngTextChunkHelper::SetCompressed(const void* InCompressedData, int64 InCo
 		CompressedData.AddUninitialized(InCompressedSize);
 		FMemory::Memcpy(CompressedData.GetData(), InCompressedData, InCompressedSize);
 
-		return LoadPNGHeader();
+		return true;
 	}
 
 	return false;
@@ -176,7 +163,10 @@ bool FPngTextChunkHelper::SetCompressed(const void* InCompressedData, int64 InCo
 
 bool FPngTextChunkHelper::IsPNG() const
 {
-	check(CompressedData.Num());
+	if (CompressedData.Num() == 0)
+	{
+		return false;
+	}
 
 	const int32 PNGSigSize = sizeof(png_size_t);
 
@@ -189,40 +179,63 @@ bool FPngTextChunkHelper::IsPNG() const
 	return false;
 }
 
-bool FPngTextChunkHelper::LoadPNGHeader()
+bool FPngTextChunkHelper::Read(TMap<FString, FString>& MapToRead)
 {
-	check(CompressedData.Num());
-
-	// Test whether the data this PNGLoader is pointing at is a PNG or not.
-	if (IsPNG())
+	if (CompressedData.Num() == 0)
 	{
-		// thread safety
-		FScopeLock PNGLock(&GPngTextChunkHelperSection);
-
-		png_structp png_ptr = png_create_read_struct_2(PNG_LIBPNG_VER_STRING, this, FPngTextChunkHelper::user_error_fn, FPngTextChunkHelper::user_warning_fn, NULL, FPngTextChunkHelper::user_malloc, FPngTextChunkHelper::user_free);
-		check(png_ptr);
-
-		png_infop info_ptr = png_create_info_struct(png_ptr);
-		check(info_ptr);
-
-		PngTextChunkHelperInternal::FPngReadGuard PNGGuard(&png_ptr, &info_ptr);
-		{
-			png_set_read_fn(png_ptr, this, FPngTextChunkHelper::user_read_compressed);
-
-			png_read_info(png_ptr, info_ptr);
-
-			Width = info_ptr->width;
-			Height = info_ptr->height;
-			ColorType = info_ptr->color_type;
-			BitDepth = info_ptr->bit_depth;
-			Channels = info_ptr->channels;
-			Format = (ColorType & PNG_COLOR_MASK_COLOR) ? ERGBFormat::RGBA : ERGBFormat::Gray;
-		}
-
-		return true;
+		return false;
 	}
 
-	return false;
+	// Test whether the data this PNGLoader is pointing at is a PNG or not.
+	if (!IsPNG())
+	{
+		return false;
+	}
+
+	// thread safety
+	FScopeLock PNGLock(&GPngTextChunkHelperSection);
+
+	png_structp png_ptr = png_create_read_struct_2(PNG_LIBPNG_VER_STRING, this, FPngTextChunkHelper::user_error_fn, FPngTextChunkHelper::user_warning_fn, NULL, FPngTextChunkHelper::user_malloc, FPngTextChunkHelper::user_free);
+	if (png_ptr == NULL)
+	{
+		return false;
+	}
+
+	png_infop info_ptr = png_create_info_struct(png_ptr);
+	if (info_ptr == NULL)
+	{
+		return false;
+	}
+
+	PngTextChunkHelperInternal::FPngReadGuard PNGGuard(&png_ptr, &info_ptr);
+	{
+		png_set_read_fn(png_ptr, this, FPngTextChunkHelper::user_read_compressed);
+		png_read_info(png_ptr, info_ptr);
+
+		Width = info_ptr->width;
+		Height = info_ptr->height;
+		ColorType = info_ptr->color_type;
+		BitDepth = info_ptr->bit_depth;
+		Channels = info_ptr->channels;
+		Format = (ColorType & PNG_COLOR_MASK_COLOR) ? ERGBFormat::RGBA : ERGBFormat::Gray;
+
+		png_textp TextPtr;
+		int32 NumText;
+		if (!png_get_text(png_ptr, info_ptr, &TextPtr, &NumText))
+		{
+			return false;
+		}
+
+		for (int32 Index = 0; Index < NumText; Index++)
+		{
+			const auto Key = FString(ANSI_TO_TCHAR(TextPtr[Index].key));
+			const auto Value = FString(ANSI_TO_TCHAR(TextPtr[Index].text));
+
+			MapToRead.Add(Key, Value);
+		}
+	}
+
+	return true;
 }
 
 void FPngTextChunkHelper::Reset()
@@ -274,6 +287,29 @@ void FPngTextChunkHelper::Compress(int32 Quality)
 			png_set_IHDR(png_ptr, info_ptr, Width, Height, RawBitDepth, (RawFormat == ERGBFormat::Gray) ? PNG_COLOR_TYPE_GRAY : PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
 			png_set_write_fn(png_ptr, this, FPngTextChunkHelper::user_write_compressed, FPngTextChunkHelper::user_flush_data);
 
+			TMap<FString, FString> MapToWrite;
+			MapToWrite.Add(TEXT("Test"), TEXT("Hello World"));
+			const int32 NumText = MapToWrite.Num();
+			TArray<png_text> TextPtr;
+			TextPtr.Reserve(NumText);
+			int32 Index = 0;
+			for (const auto& Data : MapToWrite)
+			{
+				const auto CastedKey = StringCast<ANSICHAR>(*Data.Key);
+				const auto CastedValue = StringCast<ANSICHAR>(*Data.Value);
+
+				png_text Text;
+				Text.key = const_cast<char*>(CastedKey.Get());
+				Text.text = const_cast<char*>(CastedValue.Get());
+				Text.text_length = TCString<char>::Strlen(Text.text);
+				Text.compression = PNG_TEXT_COMPRESSION_NONE;
+
+				TextPtr.Add(Text);
+
+				Index++;
+			}
+			png_set_text(png_ptr, info_ptr, TextPtr.GetData(), NumText);
+
 			const uint64 PixelChannels = (RawFormat == ERGBFormat::Gray) ? 1 : 4;
 			const uint64 BytesPerPixel = (RawBitDepth * PixelChannels) / 8;
 			const uint64 BytesPerRow = BytesPerPixel * Width;
@@ -288,146 +324,6 @@ void FPngTextChunkHelper::Compress(int32 Quality)
 			png_write_png(png_ptr, info_ptr, Transform, NULL);
 		}
 	}
-}
-
-void FPngTextChunkHelper::Uncompress(const ERGBFormat InFormat, int32 InBitDepth)
-{
-	if (!(!RawData.Num() || InFormat != RawFormat || InBitDepth != RawBitDepth))
-	{
-		return;
-	}
-
-	check(CompressedData.Num());
-	check(Width > 0);
-	check(Height > 0);
-
-	// Note that PNGs on PC tend to be BGR
-	check(InFormat == ERGBFormat::BGRA || InFormat == ERGBFormat::RGBA || InFormat == ERGBFormat::Gray)	// Other formats unsupported at present
-	check(InBitDepth == 8 || InBitDepth == 16)	// Other formats unsupported at present
-
-	// Reset to the beginning of file so we can use png_read_png(), which expects to start at the beginning.
-	ReadOffset = 0;
-
-	png_structp png_ptr = png_create_read_struct_2(PNG_LIBPNG_VER_STRING, this, FPngTextChunkHelper::user_error_fn, FPngTextChunkHelper::user_warning_fn, NULL, FPngTextChunkHelper::user_malloc, FPngTextChunkHelper::user_free);
-	check(png_ptr);
-
-	png_infop info_ptr = png_create_info_struct(png_ptr);
-	check(info_ptr);
-
-	{
-		png_bytep* row_pointers = (png_bytep*)png_malloc(png_ptr, Height * sizeof(png_bytep));
-		PngTextChunkHelperInternal::FPngReadGuard PNGGuard(&png_ptr, &info_ptr);
-		PNGGuard.SetRowPointers(row_pointers);
-
-		//Use libPNG jump buffer solution to allow concurrent compression\decompression on concurrent threads.
-		if (setjmp(png_jmpbuf(png_ptr)) != 0)
-		{
-			return;
-		}
-
-		// ---------------------------------------------------------------------------------------------------------
-		// Anything allocated on the stack after this point will not be destructed correctly in the case of an error
-		{
-			if (ColorType == PNG_COLOR_TYPE_PALETTE)
-			{
-				png_set_palette_to_rgb(png_ptr);
-			}
-
-			if ((ColorType & PNG_COLOR_MASK_COLOR) == 0 && BitDepth < 8)
-			{
-				png_set_expand_gray_1_2_4_to_8(png_ptr);
-			}
-
-			// Insert alpha channel with full opacity for RGB images without alpha
-			if ((ColorType & PNG_COLOR_MASK_ALPHA) == 0 && (InFormat == ERGBFormat::BGRA || InFormat == ERGBFormat::RGBA))
-			{
-				// png images don't set PNG_COLOR_MASK_ALPHA if they have alpha from a tRNS chunk, but png_set_add_alpha seems to be safe regardless
-				if ((ColorType & PNG_COLOR_MASK_COLOR) == 0)
-				{
-					png_set_tRNS_to_alpha(png_ptr);
-				}
-				else if (ColorType == PNG_COLOR_TYPE_PALETTE)
-				{
-					png_set_tRNS_to_alpha(png_ptr);
-				}
-				if (InBitDepth == 8)
-				{
-					png_set_add_alpha(png_ptr, 0xff, PNG_FILLER_AFTER);
-				}
-				else if (InBitDepth == 16)
-				{
-					png_set_add_alpha(png_ptr, 0xffff, PNG_FILLER_AFTER);
-				}
-			}
-
-			// Calculate Pixel Depth
-			const uint64 PixelChannels = (InFormat == ERGBFormat::Gray) ? 1 : 4;
-			const uint64 BytesPerPixel = (InBitDepth * PixelChannels) / 8;
-			const uint64 BytesPerRow = BytesPerPixel * Width;
-			RawData.Empty(Height * BytesPerRow);
-			RawData.AddUninitialized(Height * BytesPerRow);
-
-			png_set_read_fn(png_ptr, this, FPngTextChunkHelper::user_read_compressed);
-
-			for (int64 i = 0; i < Height; i++)
-			{
-				row_pointers[i] = &RawData[i * BytesPerRow];
-			}
-			png_set_rows(png_ptr, info_ptr, row_pointers);
-
-			uint32 Transform = (InFormat == ERGBFormat::BGRA) ? PNG_TRANSFORM_BGR : PNG_TRANSFORM_IDENTITY;
-
-			// Convert grayscale png to RGB if requested
-			if ((ColorType & PNG_COLOR_MASK_COLOR) == 0 &&
-				(InFormat == ERGBFormat::RGBA || InFormat == ERGBFormat::BGRA))
-			{
-				Transform |= PNG_TRANSFORM_GRAY_TO_RGB;
-			}
-
-			// Convert RGB png to grayscale if requested
-			if ((ColorType & PNG_COLOR_MASK_COLOR) != 0 && InFormat == ERGBFormat::Gray)
-			{
-				png_set_rgb_to_gray_fixed(png_ptr, 2 /* warn if image is in color */, -1, -1);
-			}
-
-			// Strip alpha channel if requested output is grayscale
-			if (InFormat == ERGBFormat::Gray)
-			{
-				// this is not necessarily the best option, instead perhaps:
-				// png_color background = {0,0,0};
-				// png_set_background(png_ptr, &background, PNG_BACKGROUND_GAMMA_SCREEN, 0, 1.0);
-				Transform |= PNG_TRANSFORM_STRIP_ALPHA;
-			}
-
-			// Reduce 16-bit to 8-bit if requested
-			if (BitDepth == 16 && InBitDepth == 8)
-			{
-#if PNG_LIBPNG_VER >= 10504
-				check(0); // Needs testing
-				Transform |= PNG_TRANSFORM_SCALE_16;
-#else
-				Transform |= PNG_TRANSFORM_STRIP_16;
-#endif
-			}
-
-			// Increase 8-bit to 16-bit if requested
-			if (BitDepth <= 8 && InBitDepth == 16)
-			{
-#if PNG_LIBPNG_VER >= 10504
-				check(0); // Needs testing
-				Transform |= PNG_TRANSFORM_EXPAND_16;
-#else
-				// Expanding 8-bit images to 16-bit via transform needs a libpng update
-				check(0);
-#endif
-			}
-
-			png_read_png(png_ptr, info_ptr, Transform, NULL);
-		}
-	}
-
-	RawFormat = InFormat;
-	RawBitDepth = InBitDepth;
 }
 
 void FPngTextChunkHelper::user_read_compressed(png_structp png_ptr, png_bytep data, png_size_t length)

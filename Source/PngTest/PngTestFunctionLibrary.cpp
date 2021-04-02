@@ -19,10 +19,10 @@ bool UPngTestFunctionLibrary::Write(const TMap<FString, FString>& MapToWrite)
 bool UPngTestFunctionLibrary::Read(TMap<FString, FString>& MapToRead)
 {
 	TSharedPtr<FPngTextChunkHelper> Helper = FPngTextChunkHelper::CreatePngTextChunkHelper(Filename);
-	if (Helper.IsValid())
+	if (!Helper.IsValid())
 	{
-		Helper->Uncompress(ERGBFormat::RGBA, 8);
+		return false;
 	}
 
-	return true;
+	return Helper->Read(MapToRead);;
 }
