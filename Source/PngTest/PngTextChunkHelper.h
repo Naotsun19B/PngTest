@@ -31,7 +31,7 @@ public:
 	FPngTextChunkHelper();
 
 	// IImageWrapper interface.
-	virtual const TArray64<uint8>& GetCompressed(int32 Quality = 0) override;
+	virtual const TArray64<uint8>& GetCompressed(int32 Quality = 0) override { return CompressedData; }
 	virtual bool SetCompressed(const void* InCompressedData, int64 InCompressedSize) override;
 	virtual bool GetRaw(const ERGBFormat InFormat, int32 InBitDepth, TArray64<uint8>& OutRawData) override { return false; }
 	virtual bool SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth) override { return false; }
@@ -47,11 +47,6 @@ public:
 	virtual bool IsPNG() const;
 	virtual bool Write(const TMap<FString, FString>& MapToWrite);
 	virtual bool Read(TMap<FString, FString>& MapToRead);
-
-	virtual void SetError(const TCHAR* ErrorMessage)
-	{
-		LastError = ErrorMessage;
-	}
 
 protected:
 	// Callbacks for the pnglibs.
@@ -71,8 +66,5 @@ private:
 
 	// The read offset into our array.
 	int64 ReadOffset;
-
-	// Last Error Message.
-	FString LastError;
 };
 #endif
