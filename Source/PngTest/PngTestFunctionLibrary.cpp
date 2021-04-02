@@ -8,12 +8,12 @@ static const FString& Filename = FPaths::ConvertRelativePathToFull(FPaths::Combi
 bool UPngTestFunctionLibrary::Write(const TMap<FString, FString>& MapToWrite)
 {
 	TSharedPtr<FPngTextChunkHelper> Helper = FPngTextChunkHelper::CreatePngTextChunkHelper(Filename);
-	if (Helper.IsValid())
+	if (!Helper.IsValid())
 	{
-		Helper->Compress(0);
+		return false;
 	}
-	
-	return true;
+
+	return Helper->Write(MapToWrite);
 }
 
 bool UPngTestFunctionLibrary::Read(TMap<FString, FString>& MapToRead)
@@ -24,5 +24,5 @@ bool UPngTestFunctionLibrary::Read(TMap<FString, FString>& MapToRead)
 		return false;
 	}
 
-	return Helper->Read(MapToRead);;
+	return Helper->Read(MapToRead);
 }

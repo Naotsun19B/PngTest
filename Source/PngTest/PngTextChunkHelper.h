@@ -31,23 +31,22 @@ public:
 	FPngTextChunkHelper();
 
 	// IImageWrapper interface.
-	virtual bool GetRaw(const ERGBFormat InFormat, int32 InBitDepth, TArray64<uint8>& OutRawData) override { return false; }
-	virtual bool SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth) override;
 	virtual const TArray64<uint8>& GetCompressed(int32 Quality = 0) override;
 	virtual bool SetCompressed(const void* InCompressedData, int64 InCompressedSize) override;
-	virtual int32 GetWidth() const override { return Width; }
+	virtual bool GetRaw(const ERGBFormat InFormat, int32 InBitDepth, TArray64<uint8>& OutRawData) override { return false; }
+	virtual bool SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth) override { return false; }
+	virtual int32 GetHeight() const override { return -1; }
+	virtual int32 GetWidth() const override { return -1; }
 	virtual int32 GetNumFrames() const override { return -1; }
 	virtual int32 GetFramerate() const override { return -1; }
-	virtual int32 GetBitDepth() const override { return BitDepth; }
-	virtual ERGBFormat GetFormat() const override { return Format; }
-	virtual int32 GetHeight() const override { return Height; }
+	virtual int32 GetBitDepth() const override { return -1; }
+	virtual ERGBFormat GetFormat() const override { return ERGBFormat::Invalid; }
 	virtual bool SetAnimationInfo(int32 InNumFrames, int32 InFramerate) override { return false; }
 	// End of IImageWrapper interface.
 
 	virtual bool IsPNG() const;
+	virtual bool Write(const TMap<FString, FString>& MapToWrite);
 	virtual bool Read(TMap<FString, FString>& MapToRead);
-	virtual void Reset();
-	virtual void Compress(int32 Quality);
 
 	virtual void SetError(const TCHAR* ErrorMessage)
 	{
@@ -70,28 +69,8 @@ private:
 	TArray64<uint8> RawData;
 	TArray64<uint8> CompressedData;
 
-	// Format of the raw data.
-	ERGBFormat RawFormat;
-	int8 RawBitDepth;
-
-	// Format of the image.
-	ERGBFormat Format;
-
-	// Bit depth of the image.
-	int8 BitDepth;
-
-	// Width/Height of the image data.
-	int32 Width;
-	int32 Height;
-
 	// The read offset into our array.
 	int64 ReadOffset;
-
-	// The color type as defined in the header.
-	int32 ColorType;
-
-	// The number of channels.
-	uint8 Channels;
 
 	// Last Error Message.
 	FString LastError;
