@@ -156,6 +156,8 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 		return false;
 	}
 
+	png_read_png(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr(), PNG_TRANSFORM_IDENTITY, nullptr);
+
 	// Prepare png_struct etc. for writing.
 	PngTextChunkHelperInternal::FPngWriteGuard WriteGuard(
 		this, 
@@ -174,10 +176,12 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 		return false;
 	}
 
-	png_read_png(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr(), PNG_TRANSFORM_IDENTITY, nullptr);
 	// Copy the read original png_info.
 	FMemory::Memcpy(WriteGuard.GetInfoPtr(), ReadGuard.GetInfoPtr(), sizeof(png_info));
 	
+	// Get pixel data from read png_struct and png_info.
+	png_bytepp RowPointers = png_get_rows(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr());
+
 	// Overwrite text chunks and write to file.
 	const int32 NumText = MapToWrite.Num();
 	TArray<png_text> TextPtr;
@@ -197,18 +201,14 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 		TextPtr.Add(Text);
 	}
 	png_set_text(WriteGuard.GetWritePtr(), WriteGuard.GetInfoPtr(), TextPtr.GetData(), NumText);
+	png_set_rows(WriteGuard.GetWritePtr(), WriteGuard.GetInfoPtr(), RowPointers);
+	png_write_png(WriteGuard.GetWritePtr(), WriteGuard.GetInfoPtr(), PNG_TRANSFORM_IDENTITY, nullptr);
 
-	TArray<uint8> ImageData;
-	const int64 ImageDataSize = CompressedData.Num() - ReadOffset;
-	ImageData.SetNumUninitialized(ImageDataSize);
-	FMemory::Memcpy(ImageData.GetData(), CompressedData.GetData() + ReadOffset, ImageDataSize);
-	
-	CompressedData.Empty();
-	png_write_info(WriteGuard.GetWritePtr(), WriteGuard.GetInfoPtr());
-
-	const int64 NewHeaderSize = CompressedData.Num();
-	CompressedData.SetNumUninitialized(CompressedData.Num() + ImageDataSize);
-	FMemory::Memcpy(CompressedData.GetData() + NewHeaderSize, ImageData.GetData(), ImageDataSize);
+	// Release the acquired pixel data.
+	if (RowPointers != nullptr)
+	{
+		png_free(ReadGuard.GetReadPtr(), RowPointers);
+	}
 
 	return FFileHelper::SaveArrayToFile(CompressedData, *Filename);
 }
