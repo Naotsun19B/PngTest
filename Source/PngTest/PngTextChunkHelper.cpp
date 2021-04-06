@@ -30,7 +30,8 @@ namespace PngTextChunkHelperInternal
 			png_error_ptr ErrorCallback,
 			png_error_ptr WarningCallback,
 			png_malloc_ptr MallocCallback,
-			png_free_ptr FreeCallback
+			png_free_ptr FreeCallback,
+			png_rw_ptr ReadDataCallback
 		)
 		{
 			ReadPtr = png_create_read_struct_2(
@@ -43,6 +44,7 @@ namespace PngTextChunkHelperInternal
 				FreeCallback
 			);
 			InfoPtr = png_create_info_struct(ReadPtr);
+			png_set_read_fn(ReadPtr, Context, ReadDataCallback);
 		}
 
 		~FPngReadGuard()
@@ -65,11 +67,14 @@ namespace PngTextChunkHelperInternal
 		FPngWriteGuard(
 			png_voidp Context,
 			png_error_ptr ErrorCallback,
-			png_error_ptr WarningCallback
+			png_error_ptr WarningCallback,
+			png_rw_ptr WriteDataCallback,
+			png_flush_ptr OutputFlushCallback
 		)
 		{
 			WritePtr = png_create_write_struct(PNG_LIBPNG_VER_STRING, Context, ErrorCallback, WarningCallback);
 			InfoPtr = png_create_info_struct(WritePtr);
+			png_set_write_fn(WritePtr, Context, WriteDataCallback, OutputFlushCallback);
 		}
 
 		~FPngWriteGuard()
@@ -129,13 +134,17 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 	// Only allow one thread to use libpng at a time.
 	FScopeLock PNGLock(&GPngTextChunkHelperSection);
 	
+	// Reset to the beginning of file so we can use png_read_png(), which expects to start at the beginning.
+	ReadOffset = 0;
+
 	// Read the png_info of the original image file.
 	PngTextChunkHelperInternal::FPngReadGuard ReadGuard(
 		this, 
 		FPngTextChunkHelper::UserError, 
 		FPngTextChunkHelper::UserWarning, 
 		FPngTextChunkHelper::UserMalloc, 
-		FPngTextChunkHelper::UserFree
+		FPngTextChunkHelper::UserFree,
+		FPngTextChunkHelper::UserReadCompressed
 	);
 	if (!ReadGuard.IsValid())
 	{
@@ -149,7 +158,11 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 
 	// Prepare png_struct etc. for writing.
 	PngTextChunkHelperInternal::FPngWriteGuard WriteGuard(
-		this, FPngTextChunkHelper::UserError, FPngTextChunkHelper::UserWarning
+		this, 
+		FPngTextChunkHelper::UserError, 
+		FPngTextChunkHelper::UserWarning,
+		FPngTextChunkHelper::UserWriteCompressed, 
+		FPngTextChunkHelper::UserFlushData
 	);
 	if (!WriteGuard.IsValid())
 	{
@@ -161,14 +174,11 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 		return false;
 	}
 
+	png_read_png(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr(), PNG_TRANSFORM_IDENTITY, nullptr);
 	// Copy the read original png_info.
-	png_set_read_fn(ReadGuard.GetReadPtr(), this, FPngTextChunkHelper::UserReadCompressed);
-	png_read_info(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr());
 	FMemory::Memcpy(WriteGuard.GetInfoPtr(), ReadGuard.GetInfoPtr(), sizeof(png_info));
 	
 	// Overwrite text chunks and write to file.
-	png_set_write_fn(WriteGuard.GetWritePtr(), this, FPngTextChunkHelper::UserWriteCompressed, FPngTextChunkHelper::UserFlushData);
-
 	const int32 NumText = MapToWrite.Num();
 	TArray<png_text> TextPtr;
 	TextPtr.Reserve(NumText);
@@ -213,13 +223,17 @@ bool FPngTextChunkHelper::Read(TMap<FString, FString>& MapToRead)
 	// Only allow one thread to use libpng at a time.
 	FScopeLock PNGLock(&GPngTextChunkHelperSection);
 
+	// Reset to the beginning of file so we can use png_read_png(), which expects to start at the beginning.
+	ReadOffset = 0;
+
 	// Read png_info.
 	PngTextChunkHelperInternal::FPngReadGuard ReadGuard(
 		this, 
 		FPngTextChunkHelper::UserError, 
 		FPngTextChunkHelper::UserWarning, 
 		FPngTextChunkHelper::UserMalloc, 
-		FPngTextChunkHelper::UserFree
+		FPngTextChunkHelper::UserFree,
+		FPngTextChunkHelper::UserReadCompressed
 	);
 	if (!ReadGuard.IsValid())
 	{
@@ -231,7 +245,6 @@ bool FPngTextChunkHelper::Read(TMap<FString, FString>& MapToRead)
 		return false;
 	}
 
-	png_set_read_fn(ReadGuard.GetReadPtr(), this, FPngTextChunkHelper::UserReadCompressed);
 	png_read_info(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr());
 
 	// Transfer the text chunk data to the argument map.
