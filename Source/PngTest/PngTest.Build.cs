@@ -10,10 +10,6 @@ public class PngTest : ModuleRules
 	
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore" });
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "ImageWrapper" });
-
-        PublicIncludePaths.AddRange(new string[] {  System.IO.Path.Combine(EngineDirectory, "Source/Runtime/ImageWrapper/Private") });
-
         AddEngineThirdPartyPrivateStaticDependencies(Target,
             "zlib",
             "UElibPNG"

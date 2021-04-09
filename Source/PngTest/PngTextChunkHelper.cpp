@@ -2,7 +2,6 @@
 
 #include "PngTextChunkHelper.h"
 #include "Misc/FileHelper.h"
-#include "IImageWrapperModule.h"
 
 #if WITH_UNREALPNG
 
@@ -30,8 +29,7 @@ namespace PngTextChunkHelperInternal
 			png_error_ptr ErrorCallback,
 			png_error_ptr WarningCallback,
 			png_malloc_ptr MallocCallback,
-			png_free_ptr FreeCallback,
-			png_rw_ptr ReadDataCallback
+			png_free_ptr FreeCallback
 		)
 		{
 			ReadPtr = png_create_read_struct_2(
@@ -44,7 +42,6 @@ namespace PngTextChunkHelperInternal
 				FreeCallback
 			);
 			InfoPtr = png_create_info_struct(ReadPtr);
-			png_set_read_fn(ReadPtr, Context, ReadDataCallback);
 		}
 
 		~FPngReadGuard()
@@ -67,14 +64,11 @@ namespace PngTextChunkHelperInternal
 		FPngWriteGuard(
 			png_voidp Context,
 			png_error_ptr ErrorCallback,
-			png_error_ptr WarningCallback,
-			png_rw_ptr WriteDataCallback,
-			png_flush_ptr OutputFlushCallback
+			png_error_ptr WarningCallback
 		)
 		{
 			WritePtr = png_create_write_struct(PNG_LIBPNG_VER_STRING, Context, ErrorCallback, WarningCallback);
 			InfoPtr = png_create_info_struct(WritePtr);
-			png_set_write_fn(WritePtr, Context, WriteDataCallback, OutputFlushCallback);
 		}
 
 		~FPngWriteGuard()
@@ -109,12 +103,6 @@ TSharedPtr<FPngTextChunkHelper> FPngTextChunkHelper::CreatePngTextChunkHelper(co
 		return nullptr;
 	}
 
-	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
-	if (ImageWrapperModule.DetectImageFormat(CompressdData.GetData(), CompressdData.Num()) != EImageFormat::PNG)
-	{
-		return nullptr;
-	}
-
 	TSharedPtr<FPngTextChunkHelper> PngTextChunkHelper = MakeShared<FPngTextChunkHelper>();
 	if (!PngTextChunkHelper->Initialize(InFilename, CompressdData.GetData(), CompressdData.Num()))
 	{
@@ -143,8 +131,7 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 		FPngTextChunkHelper::UserError, 
 		FPngTextChunkHelper::UserWarning, 
 		FPngTextChunkHelper::UserMalloc, 
-		FPngTextChunkHelper::UserFree,
-		FPngTextChunkHelper::UserReadCompressed
+		FPngTextChunkHelper::UserFree
 	);
 	if (!ReadGuard.IsValid())
 	{
@@ -156,15 +143,14 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 		return false;
 	}
 
+	png_set_read_fn(ReadGuard.GetReadPtr(), this, FPngTextChunkHelper::UserReadCompressed);
 	png_read_png(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr(), PNG_TRANSFORM_IDENTITY, nullptr);
 
 	// Prepare png_struct etc. for writing.
 	PngTextChunkHelperInternal::FPngWriteGuard WriteGuard(
 		this, 
 		FPngTextChunkHelper::UserError, 
-		FPngTextChunkHelper::UserWarning,
-		FPngTextChunkHelper::UserWriteCompressed, 
-		FPngTextChunkHelper::UserFlushData
+		FPngTextChunkHelper::UserWarning
 	);
 	if (!WriteGuard.IsValid())
 	{
@@ -179,10 +165,7 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 	// Copy the read original png_info.
 	FMemory::Memcpy(WriteGuard.GetInfoPtr(), ReadGuard.GetInfoPtr(), sizeof(png_info));
 	
-	// Get pixel data from read png_struct and png_info.
-	png_bytepp RowPointers = png_get_rows(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr());
-
-	// Overwrite text chunks and write to file.
+	// Create text chunk data and set it to png..
 	const int32 NumText = MapToWrite.Num();
 	TArray<png_text> TextPtr;
 	TextPtr.Reserve(NumText);
@@ -201,7 +184,13 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 		TextPtr.Add(Text);
 	}
 	png_set_text(WriteGuard.GetWritePtr(), WriteGuard.GetInfoPtr(), TextPtr.GetData(), NumText);
+	
+	// Get the pixel data from the read png_struct and png_info and set it to png.
+	png_bytepp RowPointers = png_get_rows(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr());
 	png_set_rows(WriteGuard.GetWritePtr(), WriteGuard.GetInfoPtr(), RowPointers);
+
+	// Write the data prepared so far to the png file.
+	png_set_write_fn(WriteGuard.GetWritePtr(), this, FPngTextChunkHelper::UserWriteCompressed, FPngTextChunkHelper::UserFlushData);
 	png_write_png(WriteGuard.GetWritePtr(), WriteGuard.GetInfoPtr(), PNG_TRANSFORM_IDENTITY, nullptr);
 
 	// Release the acquired pixel data.
@@ -232,8 +221,7 @@ bool FPngTextChunkHelper::Read(TMap<FString, FString>& MapToRead)
 		FPngTextChunkHelper::UserError, 
 		FPngTextChunkHelper::UserWarning, 
 		FPngTextChunkHelper::UserMalloc, 
-		FPngTextChunkHelper::UserFree,
-		FPngTextChunkHelper::UserReadCompressed
+		FPngTextChunkHelper::UserFree
 	);
 	if (!ReadGuard.IsValid())
 	{
@@ -245,6 +233,7 @@ bool FPngTextChunkHelper::Read(TMap<FString, FString>& MapToRead)
 		return false;
 	}
 
+	png_set_read_fn(ReadGuard.GetReadPtr(), this, FPngTextChunkHelper::UserReadCompressed);
 	png_read_info(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr());
 
 	// Transfer the text chunk data to the argument map.
@@ -285,7 +274,7 @@ bool FPngTextChunkHelper::Initialize(const FString& InFilename, const void* InCo
 	CompressedData.AddUninitialized(InCompressedSize);
 	FMemory::Memcpy(CompressedData.GetData(), InCompressedData, InCompressedSize);
 
-	return true;
+	return IsPng();
 }
 
 bool FPngTextChunkHelper::IsPng() const
