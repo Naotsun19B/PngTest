@@ -59,36 +59,67 @@ namespace PngTextChunkHelperInternal
 		png_infop InfoPtr;
 	};
 
-	class FPngReadWriteGuard : public FPngReadGuard
+	class FPngWriteGuard : public FNoncopyable
 	{
 	public:
-		FPngReadWriteGuard(
+		FPngWriteGuard(
 			png_voidp Context,
 			png_error_ptr ErrorCallback,
 			png_error_ptr WarningCallback,
-			png_malloc_ptr MallocCallback,
-			png_free_ptr FreeCallback,
-			png_rw_ptr ReadDataCallback,
 			png_rw_ptr WriteDataCallback,
 			png_flush_ptr OutputFlushCallback
 		)
-			: FPngReadGuard(Context, ErrorCallback, WarningCallback, MallocCallback, FreeCallback, ReadDataCallback)
 		{
 			WritePtr = png_create_write_struct(PNG_LIBPNG_VER_STRING, Context, ErrorCallback, WarningCallback);
+			InfoPtr = png_create_info_struct(WritePtr);
 			png_set_write_fn(WritePtr, Context, WriteDataCallback, OutputFlushCallback);
 		}
 
-		~FPngReadWriteGuard()
+		~FPngWriteGuard()
 		{
-			png_destroy_write_struct(&WritePtr, nullptr);
+			png_destroy_write_struct(&WritePtr, &InfoPtr);
 		}
 
 		png_structp GetWritePtr() const { return WritePtr; }
-		virtual bool IsValid() const override { return (WritePtr != nullptr && FPngReadGuard::IsValid()); }
+		png_infop GetInfoPtr() const { return InfoPtr; }
+		bool IsValid() const { return (WritePtr != nullptr && InfoPtr != nullptr); }
 
 	private:
 		png_structp WritePtr;
+		png_infop InfoPtr;
 	};
+
+	void CopyPngInfoStruct(png_structp DestinationPngPtr, png_infop DestinationInfoPtr, png_structp SourcePngPtr, png_infop SourceInfoPtr)
+	{
+		check(DestinationPngPtr != nullptr && DestinationInfoPtr != nullptr);
+		check(SourcePngPtr != nullptr && SourceInfoPtr != nullptr);
+
+		// Set compression level.
+		{
+			png_set_compression_level(DestinationPngPtr, Z_BEST_SPEED);
+		}
+		// Copy IHDR.
+		{
+			png_uint_32 Width;
+			png_uint_32 Height;
+			int32 BitDepth;
+			int32 ColorType;
+			int32 InterlaceMethod;
+			int32 CompressionMethod;
+			int32 FilterMethod;
+			png_get_IHDR(SourcePngPtr, SourceInfoPtr, &Width, &Height, &BitDepth, &ColorType, &InterlaceMethod, &CompressionMethod, &FilterMethod);
+			png_set_IHDR(DestinationPngPtr, DestinationInfoPtr, Width, Height, BitDepth, ColorType, InterlaceMethod, CompressionMethod, FilterMethod);
+		}
+		// Copy row pointers.
+		{
+			png_bytepp RowPointers = png_get_rows(SourcePngPtr, SourceInfoPtr);
+			png_set_rows(DestinationPngPtr, DestinationInfoPtr, RowPointers);
+		}
+		// Copy channels.
+		{
+			DestinationInfoPtr->channels = SourceInfoPtr->channels;
+		}
+	}
 }
 
 // Only allow one thread to use libpng at a time.
@@ -127,33 +158,50 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 	// Reset to the beginning of file so we can use png_read_png(), which expects to start at the beginning.
 	ReadOffset = 0;
 
-	// 
-	PngTextChunkHelperInternal::FPngReadWriteGuard ReadWriteGuard(
+	// Read the png_info of the original image file.
+	PngTextChunkHelperInternal::FPngReadGuard ReadGuard(
 		this,
 		FPngTextChunkHelper::UserError,
 		FPngTextChunkHelper::UserWarning,
 		FPngTextChunkHelper::UserMalloc,
 		FPngTextChunkHelper::UserFree,
-		FPngTextChunkHelper::UserReadCompressed,
+		FPngTextChunkHelper::UserReadCompressed
+	);
+	if (!ReadGuard.IsValid())
+	{
+		return false;
+	}
+
+	if (setjmp(png_jmpbuf(ReadGuard.GetReadPtr())) != 0)
+	{
+		return false;
+	}
+
+	png_read_png(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr(), PNG_TRANSFORM_IDENTITY, nullptr);
+
+	// Prepare png_struct etc. for writing.
+	PngTextChunkHelperInternal::FPngWriteGuard WriteGuard(
+		this,
+		FPngTextChunkHelper::UserError,
+		FPngTextChunkHelper::UserWarning,
 		FPngTextChunkHelper::UserWriteCompressed,
 		FPngTextChunkHelper::UserFlushData
 	);
-	if (!ReadWriteGuard.IsValid())
+	if (!WriteGuard.IsValid())
 	{
 		return false;
 	}
 
-	if (setjmp(png_jmpbuf(ReadWriteGuard.GetReadPtr())) != 0)
+	if (setjmp(png_jmpbuf(WriteGuard.GetWritePtr())) != 0)
 	{
 		return false;
 	}
 
-	png_read_png(ReadWriteGuard.GetReadPtr(), ReadWriteGuard.GetInfoPtr(), PNG_TRANSFORM_IDENTITY, nullptr);
-
-	if (setjmp(png_jmpbuf(ReadWriteGuard.GetWritePtr())) != 0)
-	{
-		return false;
-	}
+	// Copy the read original png_info to png_info used for write.
+	PngTextChunkHelperInternal::CopyPngInfoStruct(
+		WriteGuard.GetWritePtr(), WriteGuard.GetInfoPtr(),
+		ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr()
+	);
 	
 	// Create text chunk data and set it to png.
 	const int32 NumText = MapToWrite.Num();
@@ -162,27 +210,30 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 	for (const auto& Data : MapToWrite)
 	{
 		png_text Text;
+		FMemory::Memzero(Text);
 
 		auto Key = StringCast<ANSICHAR>(*Data.Key);
-		auto KeyBuffer = static_cast<ANSICHAR*>(FMemory::Malloc(Key.Length()));
-		TCString<ANSICHAR>::Strcpy(KeyBuffer, Key.Length(), Key.Get());
+		const int32 KeyLength = TCString<ANSICHAR>::Strlen(Key.Get());
+		auto KeyBuffer = static_cast<ANSICHAR*>(FMemory::Malloc(KeyLength));
+		TCString<ANSICHAR>::Strcpy(KeyBuffer, KeyLength, Key.Get());
 		Text.key = KeyBuffer;
 
 		auto Value = StringCast<ANSICHAR>(*Data.Value);
-		auto ValueBuffer = static_cast<ANSICHAR*>(FMemory::Malloc(Value.Length()));
-		TCString<ANSICHAR>::Strcpy(ValueBuffer, Value.Length(), Value.Get());
+		const int32 ValueLength = TCString<ANSICHAR>::Strlen(Value.Get());
+		auto ValueBuffer = static_cast<ANSICHAR*>(FMemory::Malloc(ValueLength));
+		TCString<ANSICHAR>::Strcpy(ValueBuffer, ValueLength, Value.Get());
 		Text.text = ValueBuffer;
 
-		Text.text_length = TCString<char>::Strlen(Text.text);
+		Text.text_length = ValueLength;
+		Text.itxt_length = KeyLength + ValueLength;
 		Text.compression = PNG_TEXT_COMPRESSION_NONE;
-
 		TextPtr.Add(Text);
 	}
-	png_set_text(ReadWriteGuard.GetWritePtr(), ReadWriteGuard.GetInfoPtr(), TextPtr.GetData(), NumText);
+	png_set_text(WriteGuard.GetWritePtr(), WriteGuard.GetInfoPtr(), TextPtr.GetData(), NumText);
 
 	// Write the data prepared so far to the png file.
 	CompressedData.Empty();
-	png_write_png(ReadWriteGuard.GetWritePtr(), ReadWriteGuard.GetInfoPtr(), PNG_TRANSFORM_IDENTITY, nullptr);
+	png_write_png(WriteGuard.GetWritePtr(), WriteGuard.GetInfoPtr(), PNG_TRANSFORM_IDENTITY, nullptr);
 
 	return FFileHelper::SaveArrayToFile(CompressedData, *Filename);
 }
