@@ -225,7 +225,7 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 		Text.text = ValueBuffer;
 
 		Text.text_length = ValueLength;
-		Text.itxt_length = KeyLength + ValueLength;
+		Text.itxt_length = 0;
 		Text.compression = PNG_TEXT_COMPRESSION_NONE;
 		TextPtr.Add(Text);
 	}
