@@ -15,6 +15,9 @@ THIRD_PARTY_INCLUDES_END
 #pragma warning(disable:4611)
 #endif
 
+// Only allow one thread to use libpng at a time.
+FCriticalSection GPngTextChunkHelperSection;
+
 namespace PngTextChunkHelperInternal
 {
 	/**
@@ -23,6 +26,7 @@ namespace PngTextChunkHelperInternal
 	class FPngReadGuard : public FNoncopyable
 	{
 	public:
+		// Constructor.
 		FPngReadGuard(
 			png_voidp Context,
 			png_error_ptr ErrorCallback,
@@ -30,14 +34,14 @@ namespace PngTextChunkHelperInternal
 			png_malloc_ptr MallocCallback,
 			png_free_ptr FreeCallback,
 			png_rw_ptr ReadDataCallback
-		)
+		) 
 		{
 			ReadPtr = png_create_read_struct_2(
-				PNG_LIBPNG_VER_STRING, 
-				Context, 
-				ErrorCallback, 
+				PNG_LIBPNG_VER_STRING,
+				Context,
+				ErrorCallback,
 				WarningCallback,
-				nullptr, 
+				nullptr,
 				MallocCallback,
 				FreeCallback
 			);
@@ -45,16 +49,19 @@ namespace PngTextChunkHelperInternal
 			png_set_read_fn(ReadPtr, Context, ReadDataCallback);
 		}
 
-		virtual ~FPngReadGuard()
+		// Destructor.
+		~FPngReadGuard()
 		{
 			png_destroy_read_struct(&ReadPtr, &InfoPtr, nullptr);
 		}
 
+		// Accessor and validation.
 		png_structp GetReadPtr() const { return ReadPtr; }
 		png_infop GetInfoPtr() const { return InfoPtr; }
-		virtual bool IsValid() const { return (ReadPtr != nullptr && InfoPtr != nullptr); }
+		bool IsValid() const { return (ReadPtr != nullptr && InfoPtr != nullptr); }
 
 	private:
+		// Pointers used to access png files with libpng.
 		png_structp ReadPtr;
 		png_infop InfoPtr;
 	};
@@ -62,6 +69,7 @@ namespace PngTextChunkHelperInternal
 	class FPngWriteGuard : public FNoncopyable
 	{
 	public:
+		// Constructor.
 		FPngWriteGuard(
 			png_voidp Context,
 			png_error_ptr ErrorCallback,
@@ -75,21 +83,30 @@ namespace PngTextChunkHelperInternal
 			png_set_write_fn(WritePtr, Context, WriteDataCallback, OutputFlushCallback);
 		}
 
+		// Destructor.
 		~FPngWriteGuard()
 		{
 			png_destroy_write_struct(&WritePtr, &InfoPtr);
 		}
 
+		// Accessor and validation.
 		png_structp GetWritePtr() const { return WritePtr; }
 		png_infop GetInfoPtr() const { return InfoPtr; }
 		bool IsValid() const { return (WritePtr != nullptr && InfoPtr != nullptr); }
 
 	private:
+		// Pointers used to access png files with libpng.
 		png_structp WritePtr;
 		png_infop InfoPtr;
 	};
 
-	void CopyPngInfoStruct(png_structp DestinationPngPtr, png_infop DestinationInfoPtr, png_structp SourcePngPtr, png_infop SourceInfoPtr)
+	// Copy compression levels, IHDR chunks, row pointers, channels.
+	void CopyPngInfoStruct(
+		png_structp DestinationPngPtr,
+		png_infop DestinationInfoPtr,
+		png_structp SourcePngPtr,
+		png_infop SourceInfoPtr
+	)
 	{
 		check(DestinationPngPtr != nullptr && DestinationInfoPtr != nullptr);
 		check(SourcePngPtr != nullptr && SourceInfoPtr != nullptr);
@@ -120,14 +137,90 @@ namespace PngTextChunkHelperInternal
 			DestinationInfoPtr->channels = SourceInfoPtr->channels;
 		}
 	}
-}
 
-// Only allow one thread to use libpng at a time.
-FCriticalSection GPngTextChunkHelperSection;
+	// Check if either the key or value is empty and if the key and value string contains \0.
+	bool ValidateMap(const TMap<FString, FString>& Map)
+	{
+		auto HasEscapeSequence = [](const FString& String) -> bool
+		{
+			for (const auto& Char : String)
+			{
+				if (Char == TEXT('\0'))
+				{
+					return true;
+				}
+			}
+
+			return false;
+		};
+
+		bool bIsValid = true;
+
+		for (const auto& Pair : Map)
+		{
+			if (Pair.Key.IsEmpty() || 
+				Pair.Value.IsEmpty() ||
+				HasEscapeSequence(Pair.Key) || 
+				HasEscapeSequence(Pair.Value)
+			)
+			{
+				bIsValid = false;
+				break;
+			}
+		}
+
+		return bIsValid;
+	}
+
+	// Converts a string in the state of TArray64<uint8> to FString.
+	FString ConvertByteArrayToString(const TArray64<uint8>& ByteArray)
+	{
+		FString ConvertedString = TEXT("");
+		for (const auto& Byte : ByteArray)
+		{
+			ConvertedString += FString::Printf(TEXT("%c"), Byte);
+		}
+		return ConvertedString;
+	}
+
+	// Define the name of the text chunk in the png file.
+	static const FString TextChunkName = TEXT("tEXt");
+
+	// Gets the position of the next text chunk closest to the StartPosition.
+	// If not found, INDEX_NONE is returned.
+	int32 GetTextChunkPosition(const TArray64<uint8>& CompressedData, int32 StartPosition = 0)
+	{
+		int32 FoundPosition = INDEX_NONE;
+		const int32 ChunkNameLength = TextChunkName.Len();
+		for (int32 Index = StartPosition; Index < CompressedData.Num() - ChunkNameLength; Index++)
+		{
+			bool bIsMatch = true;
+			for (int32 Offset = 0; Offset < ChunkNameLength; Offset++)
+			{
+				if (CompressedData[Index + Offset] != TextChunkName[Offset])
+				{
+					bIsMatch = false;
+				}
+			}
+
+			if (bIsMatch)
+			{
+				FoundPosition = Index + ChunkNameLength;
+				break;
+			}
+		}
+
+		return FoundPosition;
+	}
+}
 
 FPngTextChunkHelper::FPngTextChunkHelper()
 	: Filename(TEXT(""))
 	, ReadOffset(0)
+{
+}
+
+FPngTextChunkHelper::~FPngTextChunkHelper()
 {
 }
 
@@ -136,6 +229,7 @@ TSharedPtr<FPngTextChunkHelper> FPngTextChunkHelper::CreatePngTextChunkHelper(co
 	TArray<uint8> CompressdData;
 	if (!FFileHelper::LoadFileToArray(CompressdData, *InFilename))
 	{
+		UE_LOG(LogTemp, Error, TEXT("Failed to load the file : %s"), *InFilename);
 		return nullptr;
 	}
 
@@ -151,6 +245,13 @@ TSharedPtr<FPngTextChunkHelper> FPngTextChunkHelper::CreatePngTextChunkHelper(co
 bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 {
 	check(IsPng());
+
+	// Determine if the map is useable.
+	if (!PngTextChunkHelperInternal::ValidateMap(MapToWrite))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Writing to a text chunk is not possible because either the key or value is empty, or the key and value string contains \0."));
+		return false;
+	}
 
 	// Only allow one thread to use libpng at a time.
 	FScopeLock PNGLock(&GPngTextChunkHelperSection);
@@ -204,6 +305,7 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 	);
 	
 	// Create text chunk data and set it to png.
+	// When converting from FString to png_charp, most of the time the escape sequences are mixed first.
 	const int32 NumText = MapToWrite.Num();
 	TArray<png_text> TextPtr;
 	TextPtr.Reserve(NumText);
@@ -214,19 +316,26 @@ bool FPngTextChunkHelper::Write(const TMap<FString, FString>& MapToWrite)
 
 		auto Key = StringCast<ANSICHAR>(*Data.Key);
 		const int32 KeyLength = TCString<ANSICHAR>::Strlen(Key.Get());
-		auto KeyBuffer = static_cast<ANSICHAR*>(FMemory::Malloc(KeyLength));
-		TCString<ANSICHAR>::Strcpy(KeyBuffer, KeyLength, Key.Get());
-		Text.key = KeyBuffer;
-
+		if (KeyLength > 0)
+		{
+			auto KeyBuffer = static_cast<ANSICHAR*>(FMemory::Malloc(KeyLength));
+			TCString<ANSICHAR>::Strcpy(KeyBuffer, KeyLength, Key.Get());
+			Text.key = KeyBuffer;
+		}
+		
 		auto Value = StringCast<ANSICHAR>(*Data.Value);
 		const int32 ValueLength = TCString<ANSICHAR>::Strlen(Value.Get());
-		auto ValueBuffer = static_cast<ANSICHAR*>(FMemory::Malloc(ValueLength));
-		TCString<ANSICHAR>::Strcpy(ValueBuffer, ValueLength, Value.Get());
-		Text.text = ValueBuffer;
+		if (ValueLength > 0)
+		{
+			auto ValueBuffer = static_cast<ANSICHAR*>(FMemory::Malloc(ValueLength));
+			TCString<ANSICHAR>::Strcpy(ValueBuffer, ValueLength, Value.Get());
+			Text.text = ValueBuffer;
+		}
 
 		Text.text_length = ValueLength;
 		Text.itxt_length = 0;
 		Text.compression = PNG_TEXT_COMPRESSION_NONE;
+
 		TextPtr.Add(Text);
 	}
 	png_set_text(WriteGuard.GetWritePtr(), WriteGuard.GetInfoPtr(), TextPtr.GetData(), NumText);
@@ -270,22 +379,95 @@ bool FPngTextChunkHelper::Read(TMap<FString, FString>& MapToRead)
 	png_read_info(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr());
 
 	// Transfer the text chunk data to the argument map.
-	png_textp TextPtr;
+	/**
+	 * png_textp TextPtr;
+	 * int32 NumText;
+	 * if (!png_get_text(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr(), &TextPtr, &NumText))
+	 * {
+	 *     return false;
+	 * }
+	 *
+	 * for (int32 Index = 0; Index < NumText; Index++)
+	 * {
+	 *     const auto Key = FString(ANSI_TO_TCHAR(TextPtr[Index].key));
+	 *     const auto Value = FString(ANSI_TO_TCHAR(TextPtr[Index].text));
+	 *     MapToRead.Add(Key, Value);
+	 * }
+	 */
+	// Hopefully wanted to do it the above way, but using png_get_text results in a zero-terminated C string, 
+	// so if an escape sequence is mixed in during writing, the data will be lost.
+	// Therefore, the data in the text chuck is taken out in the following roundabout way.
+
+	// Find out the number of texts.
+	png_textp UnusedTextPtr;
 	int32 NumText;
-	if (!png_get_text(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr(), &TextPtr, &NumText))
+	if (!png_get_text(ReadGuard.GetReadPtr(), ReadGuard.GetInfoPtr(), &UnusedTextPtr, &NumText))
 	{
 		return false;
 	}
 
-	for (int32 Index = 0; Index < NumText; Index++)
+	// Since there are as many text chunks as there are NumText, split the data by \0 by the amount of NumText.
+	TArray<TArray64<uint8>> SplitedTextChunks;
+	int32 SearchStartPosition = 0;
+	for (int32 Count = 0; Count < NumText; Count++)
 	{
-		const auto Key = FString(ANSI_TO_TCHAR(TextPtr[Index].key));
-		const auto Value = FString(ANSI_TO_TCHAR(TextPtr[Index].text));
+		const int32 TextChunkStartPosition = PngTextChunkHelperInternal::GetTextChunkPosition(CompressedData, SearchStartPosition);
+		if (TextChunkStartPosition == INDEX_NONE)
+		{
+			break;
+		}
+
+		int32 SectionStart = TextChunkStartPosition;
+		int32 SectionEnd = TextChunkStartPosition;
+		for (int32 Index = TextChunkStartPosition; Index < CompressedData.Num(); Index++)
+		{
+			if (CompressedData[Index] == TEXT('\0'))
+			{
+				SectionEnd = Index - 1;
+				if (SectionEnd - SectionStart > 0)
+				{
+					TArray64<uint8> SplitedTextChunk;
+					for (int32 CopyIndex = SectionStart; CopyIndex <= SectionEnd; CopyIndex++)
+					{
+						SplitedTextChunk.Add(CompressedData[CopyIndex]);
+					}
+					SplitedTextChunks.Add(SplitedTextChunk);
+				}
+
+				SectionStart = Index + 1;
+			}
+
+			if (SplitedTextChunks.Num() == (Count + 1) * 2)
+			{
+				break;
+			}
+		}
+
+		SearchStartPosition = SectionEnd;
+	}
+
+	// Fail if the number of carved data is not the number of NumText x2.
+	if (SplitedTextChunks.Num() != NumText * 2)
+	{
+		UE_LOG(LogTemp, Error, TEXT("------ The text could not be read correctly ------"));
+		UE_LOG(LogTemp, Error, TEXT("Number of texts retrieved from the library : %d"), NumText * 2);
+		UE_LOG(LogTemp, Error, TEXT("Number of texts actually retrieved         : %d"), SplitedTextChunks.Num());
+		UE_LOG(LogTemp, Error, TEXT("--------------------------------------------------"));
+		return false;
+	}
+
+	// Convert from a byte array to a string map.
+	for (int32 Index = 0; Index < SplitedTextChunks.Num(); Index += 2)
+	{
+		check(SplitedTextChunks.IsValidIndex(Index) && SplitedTextChunks.IsValidIndex(Index + 1));
+
+		const FString& Key = PngTextChunkHelperInternal::ConvertByteArrayToString(SplitedTextChunks[Index]);
+		const FString& Value = PngTextChunkHelperInternal::ConvertByteArrayToString(SplitedTextChunks[Index + 1]);
 
 		MapToRead.Add(Key, Value);
 	}
 
-	return true;
+	return PngTextChunkHelperInternal::ValidateMap(MapToRead);
 }
 
 bool FPngTextChunkHelper::Initialize(const FString& InFilename, const void* InCompressedData, int64 InCompressedSize)
@@ -317,6 +499,7 @@ bool FPngTextChunkHelper::IsPng() const
 		return (0 == png_sig_cmp(reinterpret_cast<png_bytep>(&PngSignature), 0, PngSignatureSize));
 	}
 
+	UE_LOG(LogTemp, Error, TEXT("This file is not a png file."));
 	return false;
 }
 

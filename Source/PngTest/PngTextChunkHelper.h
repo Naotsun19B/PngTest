@@ -21,27 +21,33 @@ THIRD_PARTY_INCLUDES_START
 #endif
 THIRD_PARTY_INCLUDES_END
 
+/**
+ * Helper class for accessing text chunks in png files.
+ */
 class FPngTextChunkHelper
 {
 public:
 	// Constructor.
 	FPngTextChunkHelper();
 
+	// Destructor.
+	virtual ~FPngTextChunkHelper();
+
 	// Factory function that creates an instance of this class.
 	static TSharedPtr<FPngTextChunkHelper> CreatePngTextChunkHelper(const FString& InFilename);
 
 	// Write to text chunk of png file.
-	bool Write(const TMap<FString, FString>& MapToWrite);
+	virtual bool Write(const TMap<FString, FString>& MapToWrite);
 
 	// Read into text chunks in png files.
-	bool Read(TMap<FString, FString>& MapToRead);
+	virtual bool Read(TMap<FString, FString>& MapToRead);
 
 protected:
 	// Copy loaded data to member variables.
-	bool Initialize(const FString& InFilename, const void* InCompressedData, int64 InCompressedSize);
+	virtual bool Initialize(const FString& InFilename, const void* InCompressedData, int64 InCompressedSize);
 
 	// Check if the format of the loaded image file is png.
-	bool IsPng() const;
+	virtual bool IsPng() const;
 
 	// Callbacks for the libpng.
 	static void UserReadCompressed(png_structp PngPtr, png_bytep Data, png_size_t Length);
@@ -53,7 +59,7 @@ protected:
 	static void UserFree(png_structp PngPtr, png_voidp StructPtr);
 	// End of callbacks for the libpng.
 
-private:
+protected:
 	// File path of the original file.
 	FString Filename;
 
